@@ -17,9 +17,9 @@ use super::{
 };
 use crate::{
     ContextId, EMPTY_WORD, Felt, MemoryAddress, MemoryError, ONE, PrimeField64, WORD_SIZE, Word,
-    ZERO,
-    field::{Field, PrimeCharacteristicRing},
+    ZERO, field::PrimeCharacteristicRing,
 };
+use miden_core::field::batch_inversion_allow_zeros;
 
 mod segment;
 use segment::{MemoryOperation, MemorySegmentTrace};
@@ -303,7 +303,9 @@ impl Memory {
         // iterate through addresses in ascending order, and write trace row for each memory access
         // into the trace. we expect the trace to be 15 columns wide.
         let mut row: RowIndex = 0.into();
+        let mut deltas = Vec::with_capacity(self.trace_len());
 
+        // First pass: collect all delta values and write all other trace data
         for (ctx, segment) in self.trace {
             let ctx = Felt::from(ctx);
             for (addr, addr_trace) in segment.into_inner() {
@@ -356,8 +358,7 @@ impl Memory {
                     let (delta_hi, delta_lo) = split_element_u32_into_u16(delta);
                     trace.set(row, D0_COL_IDX, delta_lo);
                     trace.set(row, D1_COL_IDX, delta_hi);
-                    // TODO: switch to batch inversion to improve efficiency.
-                    trace.set(row, D_INV_COL_IDX, delta.try_inverse().unwrap_or(ZERO));
+                    deltas.push(delta);
 
                     if prev_ctx == ctx && prev_addr == felt_addr {
                         trace.set(row, FLAG_SAME_CONTEXT_AND_WORD, ONE);
@@ -372,6 +373,16 @@ impl Memory {
                     row += 1_u32;
                 }
             }
+        }
+
+        // Apply batch inversion to all delta values
+        batch_inversion_allow_zeros(&mut deltas);
+
+        // Second pass: write the inverted delta values back to the trace
+        let mut row: RowIndex = 0.into();
+        for delta_inv in deltas {
+            trace.set(row, D_INV_COL_IDX, delta_inv);
+            row += 1_u32;
         }
     }
 
